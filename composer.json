@@ -1,0 +1,58 @@
+{
+    "name": "dreamfactory/df-schema-contracts",
+    "description": "Canonical SQL schema model, drift engine, and schema-driven OpenAPI generation for DreamFactory.",
+    "keywords": [
+        "dreamfactory",
+        "schema",
+        "contract",
+        "openapi",
+        "drift",
+        "sql"
+    ],
+    "homepage": "https://www.dreamfactory.com/",
+    "license": "proprietary",
+    "authors": [
+        {
+            "name": "DreamFactory Team",
+            "email": "code@dreamfactory.com"
+        }
+    ],
+    "support": {
+        "email": "dspsupport@dreamfactory.com",
+        "source": "https://github.com/dreamfactorysoftware/df-schema-contracts",
+        "issues": "https://github.com/dreamfactorysoftware/df-schema-contracts/issues"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "require": {
+        "php": "^8.2",
+        "dreamfactory/df-core": "~1.0",
+        "dreamfactory/df-database": "~1.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "DreamFactory\\Core\\SchemaContracts\\": "src/"
+        },
+        "files": [
+            "src/polyfills/php84-request-parse-body.php"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DreamFactory\\Core\\SchemaContracts\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-develop": "0.1.x-dev"
+        },
+        "laravel": {
+            "providers": [
+                "DreamFactory\\Core\\SchemaContracts\\ServiceProvider"
+            ]
+        }
+    }
+}

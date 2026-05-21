@@ -1,0 +1,10 @@
+/vendor
+/.idea
+/.vscode
+composer.phar
+composer.lock
+.DS_Store
+
+# Internal design / status / dev-setup notes are kept locally, not committed
+# (matches sibling DF packages, which ship README + CHANGELOG only).
+/docs
