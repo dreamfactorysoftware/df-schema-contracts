@@ -39,10 +39,15 @@ use Illuminate\Contracts\Events\Dispatcher;
  * field's canonical name and its alias. Contracts locked before the canonical
  * model captured `alias` must be re-locked to gain alias-aware enforcement.
  *
+ * Related/nested READ records ARE shaped one level deep: embedded related
+ * records (`?related=`) are filtered by the related table's own active
+ * contract. Same-service relationships only; cross-service and deeper-than-
+ * one-level nesting pass through unshaped.
+ *
  * KNOWN LIMITATIONS (tracked for follow-up increments):
- *  - Related/nested records (`?related=` reads, nested writes) are not
- *    inspected below the top level; relationship keys are allowed wholesale.
- *  - `?fields=` selection is not intersected with the contract on reads.
+ *  - Cross-service related records are not shaped.
+ *  - Nesting deeper than one level (related-of-related) is not shaped.
+ *  - Nested WRITES (related records in a write payload) are not validated.
  */
 class EnforcementEventHandler
 {
@@ -54,6 +59,9 @@ class EnforcementEventHandler
 
     /** @var array<string,array{writable:array<string,bool>,readonly:array<string,bool>}|null> per-request memo for write validation */
     protected array $writeKeysMemo = [];
+
+    /** @var array<string,array<string,array<string,bool>|null>> per-request memo: "service|table" => relKey => related allowed set */
+    protected array $relatedShapesMemo = [];
 
     public function subscribe(Dispatcher $events): void
     {
@@ -152,7 +160,13 @@ class EnforcementEventHandler
             return;
         }
 
-        $shaped = $this->shapeContent($content, $allowed);
+        // Per-relationship nested shaping: embedded related records
+        // (`?related=`) are shaped by the RELATED table's own contract, so a
+        // related table's non-contract columns don't leak through a parent
+        // read. One level deep; same-service relationships only.
+        $relatedShapes = $this->relatedShapes($service, $table);
+
+        $shaped = $this->shapeContent($content, $allowed, $relatedShapes);
         if ($shaped !== null) {
             $response->setContent($shaped);
         }
@@ -162,12 +176,14 @@ class EnforcementEventHandler
      * Strip non-contract keys from response records. Handles the wrapped
      * `{resource: [...]}` list shape and a bare single-record shape. Returns
      * the modified content, or null if nothing was shapeable (leave as-is).
+     *
+     * @param array<string,array<string,bool>|null> $relatedShapes relKey => related-table allowed set (null = pass through)
      */
-    protected function shapeContent(array $content, array $allowed): ?array
+    protected function shapeContent(array $content, array $allowed, array $relatedShapes = []): ?array
     {
         if (isset($content['resource']) && is_array($content['resource'])) {
             $content['resource'] = array_map(
-                fn ($rec) => is_array($rec) ? $this->filterRecord($rec, $allowed) : $rec,
+                fn ($rec) => is_array($rec) ? $this->filterRecord($rec, $allowed, $relatedShapes) : $rec,
                 $content['resource']
             );
             return $content;
@@ -177,15 +193,90 @@ class EnforcementEventHandler
         // shape it if at least one key is a known contract field, to avoid
         // mangling non-record responses (counts, errors, etc.).
         if ($this->isAssoc($content) && $this->looksLikeRecord($content, $allowed)) {
-            return $this->filterRecord($content, $allowed);
+            return $this->filterRecord($content, $allowed, $relatedShapes);
         }
 
         return null;
     }
 
-    protected function filterRecord(array $record, array $allowed): array
+    /**
+     * @param array<string,array<string,bool>|null> $relatedShapes
+     */
+    protected function filterRecord(array $record, array $allowed, array $relatedShapes = []): array
     {
-        return array_intersect_key($record, $allowed);
+        $out = array_intersect_key($record, $allowed);
+
+        // Shape embedded related records by the related table's contract.
+        foreach ($relatedShapes as $relKey => $relAllowed) {
+            if ($relAllowed === null || !array_key_exists($relKey, $out)) {
+                continue; // related table not locked, or relationship not embedded
+            }
+            $val = $out[$relKey];
+            if (!is_array($val)) {
+                continue;
+            }
+            if ($this->isAssoc($val)) {
+                // belongs_to / has_one — single embedded record
+                $out[$relKey] = array_intersect_key($val, $relAllowed);
+            } else {
+                // has_many / many_many — list of embedded records
+                $out[$relKey] = array_map(
+                    fn ($r) => is_array($r) ? array_intersect_key($r, $relAllowed) : $r,
+                    $val
+                );
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Map each of a table's relationship keys (name + alias) to the allowed-key
+     * set of the RELATED table's active contract, for nested response shaping.
+     * A relationship maps to null (pass-through, no shaping) when the related
+     * table is unlocked or lives in a different service. Memoized per request.
+     *
+     * @return array<string,array<string,bool>|null>
+     */
+    protected function relatedShapes(string $service, string $table): array
+    {
+        $memoKey = $service . '|' . $table;
+        if (array_key_exists($memoKey, $this->relatedShapesMemo)) {
+            return $this->relatedShapesMemo[$memoKey];
+        }
+
+        $snapshot = SchemaContractSnapshot::query()
+            ->where('service_name', $service)
+            ->where('table_name', $table)
+            ->where('status', SchemaContractSnapshot::STATUS_ACTIVE)
+            ->orderByDesc('contract_version')
+            ->first();
+
+        if (!$snapshot) {
+            return $this->relatedShapesMemo[$memoKey] = [];
+        }
+
+        $canonical = json_decode($snapshot->schema_json, true);
+        $map = [];
+        foreach (($canonical['relationships'] ?? []) as $r) {
+            $refTable = $r['ref_table'] ?? null;
+            if ($refTable === null || $refTable === '') {
+                continue;
+            }
+            $refService = $r['ref_service'] ?? null;
+            // Cross-service relationships are not shaped in this increment.
+            $shape = ($refService !== null && $refService !== $service)
+                ? null
+                : $this->allowedKeys($service, $refTable);
+
+            foreach ([$r['name'] ?? null, $r['alias'] ?? null] as $k) {
+                if (!empty($k)) {
+                    $map[$k] = $shape;
+                }
+            }
+        }
+
+        return $this->relatedShapesMemo[$memoKey] = $map;
     }
 
     /**
