@@ -3,42 +3,46 @@
 namespace DreamFactory\Core\SchemaContracts\Handlers\Events;
 
 use DreamFactory\Core\Events\PostProcessApiEvent;
+use DreamFactory\Core\Events\PreProcessApiEvent;
+use DreamFactory\Core\Exceptions\BadRequestException;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractService;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractSnapshot;
 use Illuminate\Contracts\Events\Dispatcher;
 
 /**
- * Phase 6 runtime enforcement — response shaping.
+ * Phase 6 runtime enforcement.
  *
- * Subscribes to the always-fired PostProcessApiEvent. When a SQL service has
- * `runtime_enforcement` set to `shape_response` (or `strict`) AND the
- * requested table has an active locked contract, strips any response fields
- * that are not part of the contract. This makes a locked table's API output
- * stable even when the live database grows new columns — new columns stay
- * invisible to clients until the contract is re-locked/promoted.
+ * Two complementary behaviors gated by a service's `runtime_enforcement`:
  *
- * Design notes (validated against a live event probe):
+ *  - shape_response (and strict): on the POST-process event, strip response
+ *    fields not in the table's active locked contract. A locked table's API
+ *    output stays stable even when the live DB grows new columns — they stay
+ *    invisible until the contract is re-locked/promoted.
+ *
+ *  - strict only: on the PRE-process event, reject writes (POST/PUT/PATCH)
+ *    whose payload references fields outside the contract or writes to
+ *    read-only contract fields. This stops clients from writing to columns
+ *    that aren't part of the locked API surface.
+ *
+ * Design notes (validated against live event probes):
  *  - The event NAME is the reliable identifier; `$request->getService()` is
  *    empty on internal service-to-service calls. Name format is
- *    `{service}._table.{table}.{verb}.post_process`.
- *  - DreamFactory fires the post-process event with the LIVE response object,
- *    so we MUTATE it in place (`setContent`) rather than reassigning — the
- *    dispatcher does not read a replaced response back.
+ *    `{service}._table.{table}.{verb}.(pre|post)_process`.
+ *  - Post-process fires with the LIVE response object, so we MUTATE it in
+ *    place (`setContent`) rather than reassigning.
+ *  - To reject a write we throw BadRequestException from the pre-process
+ *    listener; DreamFactory renders it as a 400 error envelope.
  *  - Two events fire per request (a templated `{table_name}` variant and the
  *    resolved one); we skip the templated variant.
  *
- * Scope of this slice: outbound response shaping only, top-level table
- * records. Inbound write validation (`strict`) and related/nested record
- * shaping are deliberately not handled yet.
- *
- * Field aliases ARE handled: the allowed-key set includes both a field's
- * canonical name and its alias (DreamFactory keys response records by the
- * alias when set). Contracts locked before the canonical model captured
- * `alias` must be re-locked to gain alias-aware shaping.
+ * Field aliases ARE handled (read + write): allowed-key sets include both a
+ * field's canonical name and its alias. Contracts locked before the canonical
+ * model captured `alias` must be re-locked to gain alias-aware enforcement.
  *
  * KNOWN LIMITATIONS (tracked for follow-up increments):
- *  - Related/nested records (`?related=`) below the top level are not shaped.
- *  - `?fields=` selection is not intersected with the contract.
+ *  - Related/nested records (`?related=` reads, nested writes) are not
+ *    inspected below the top level; relationship keys are allowed wholesale.
+ *  - `?fields=` selection is not intersected with the contract on reads.
  */
 class EnforcementEventHandler
 {
@@ -48,46 +52,81 @@ class EnforcementEventHandler
     /** @var array<string,array<string,bool>|null> per-request memo: "service|table" => allowed-key set (or null = no contract) */
     protected array $allowedKeysMemo = [];
 
+    /** @var array<string,array{writable:array<string,bool>,readonly:array<string,bool>}|null> per-request memo for write validation */
+    protected array $writeKeysMemo = [];
+
     public function subscribe(Dispatcher $events): void
     {
+        $events->listen(PreProcessApiEvent::class, [static::class, 'handlePreProcess']);
         $events->listen(PostProcessApiEvent::class, [static::class, 'handlePostProcess']);
+    }
+
+    /**
+     * Strict inbound write validation. Rejects POST/PUT/PATCH payloads that
+     * reference fields outside the active contract or write read-only fields.
+     * Only active when runtime_enforcement = strict.
+     *
+     * @throws BadRequestException
+     */
+    public function handlePreProcess(PreProcessApiEvent $event): void
+    {
+        $parsed = $this->parseTableEvent((string) $event->name, $event->resource);
+        if ($parsed === null) {
+            return;
+        }
+        [$service, $table, $verb] = $parsed;
+
+        if (!in_array($verb, ['POST', 'PUT', 'PATCH'], true)) {
+            return; // not a write
+        }
+
+        // Write validation is strict-only. shape_response governs reads.
+        if ($this->enforcementLevel($service) !== SchemaContractService::ENFORCE_STRICT) {
+            return;
+        }
+
+        $sets = $this->writeKeySets($service, $table);
+        if ($sets === null) {
+            return; // no active contract — nothing to enforce
+        }
+
+        $payload = $event->request->getPayloadData();
+        if (!is_array($payload)) {
+            return;
+        }
+
+        $records = $this->extractRecords($payload);
+        foreach ($records as $i => $record) {
+            if (!is_array($record)) {
+                continue;
+            }
+            foreach (array_keys($record) as $key) {
+                if (isset($sets['readonly'][$key])) {
+                    throw new BadRequestException(
+                        "Schema contract: field '{$key}' on '{$service}/{$table}' is read-only "
+                        . "under the active contract and cannot be written."
+                    );
+                }
+                if (!isset($sets['writable'][$key])) {
+                    throw new BadRequestException(
+                        "Schema contract: field '{$key}' is not part of the active contract for "
+                        . "'{$service}/{$table}'. Re-lock or promote the table to include it."
+                    );
+                }
+            }
+        }
     }
 
     public function handlePostProcess(PostProcessApiEvent $event): void
     {
-        $name = (string) $event->name;
-
-        // Skip the templated duplicate event ("{table_name}") — the resolved
-        // one fires alongside it with the same response object.
-        if (str_contains($name, '{')) {
+        $parsed = $this->parseTableEvent((string) $event->name, $event->resource);
+        if ($parsed === null) {
             return;
         }
-
-        // Only table operations: `{service}._table.{table}.{verb}.post_process`.
-        if (!str_contains($name, '._table.')) {
-            return;
-        }
-
-        // Parse service + verb from the event name.
-        $service = strstr($name, '._table.', true);
-        if ($service === false || $service === '') {
-            return;
-        }
-        // verb is the segment immediately before `.post_process`.
-        $base = preg_replace('/\.post_process$/', '', $name); // {service}._table.{table}.{verb}
-        $verb = strtoupper((string) substr(strrchr($base, '.'), 1));
+        [$service, $table, $verb] = $parsed;
 
         // shape_response only affects reads.
         if ($verb !== 'GET') {
-            return;
-        }
-
-        // Table name: prefer the resolved resource (handles schema-qualified
-        // names with dots cleanly), fall back to parsing the event name.
-        $table = is_string($event->resource) && $event->resource !== ''
-            ? $event->resource
-            : $this->tableFromName($base, $service);
-        if ($table === '' ) {
             return;
         }
 
@@ -199,6 +238,61 @@ class EnforcementEventHandler
         return $this->allowedKeysMemo[$memoKey] = $keys;
     }
 
+    /**
+     * Build write-validation key sets for a table from its active contract:
+     *   writable  = name/alias of non-read-only fields + relationship names/aliases
+     *   readonly  = name/alias of read-only contract fields (reject writes to these)
+     * Returns null when there is no active snapshot. Memoized per request.
+     *
+     * @return array{writable:array<string,bool>,readonly:array<string,bool>}|null
+     */
+    protected function writeKeySets(string $service, string $table): ?array
+    {
+        $memoKey = $service . '|' . $table;
+        if (array_key_exists($memoKey, $this->writeKeysMemo)) {
+            return $this->writeKeysMemo[$memoKey];
+        }
+
+        $snapshot = SchemaContractSnapshot::query()
+            ->where('service_name', $service)
+            ->where('table_name', $table)
+            ->where('status', SchemaContractSnapshot::STATUS_ACTIVE)
+            ->orderByDesc('contract_version')
+            ->first();
+
+        if (!$snapshot) {
+            return $this->writeKeysMemo[$memoKey] = null;
+        }
+
+        $canonical = json_decode($snapshot->schema_json, true);
+        $writable = [];
+        $readonly = [];
+        foreach (($canonical['fields'] ?? []) as $f) {
+            $names = [];
+            if (!empty($f['alias'])) {
+                $names[] = $f['alias'];
+            }
+            if (isset($f['name'])) {
+                $names[] = $f['name'];
+            }
+            $target = !empty($f['read_only']) ? 'readonly' : 'writable';
+            foreach ($names as $n) {
+                ${$target}[$n] = true;
+            }
+        }
+        // Relationship keys are allowed for nested writes (not validated deeper).
+        foreach (($canonical['relationships'] ?? []) as $r) {
+            if (!empty($r['alias'])) {
+                $writable[$r['alias']] = true;
+            }
+            if (isset($r['name'])) {
+                $writable[$r['name']] = true;
+            }
+        }
+
+        return $this->writeKeysMemo[$memoKey] = ['writable' => $writable, 'readonly' => $readonly];
+    }
+
     protected function enforcementLevel(string $service): string
     {
         if (!array_key_exists($service, $this->enforcementMemo)) {
@@ -214,6 +308,63 @@ class EnforcementEventHandler
         // strip trailing .{verb}
         $pos = strrpos($afterTable, '.');
         return $pos === false ? $afterTable : substr($afterTable, 0, $pos);
+    }
+
+    /**
+     * Parse a (pre|post)_process event into [service, table, verb], or null
+     * if it isn't a resolved `_table` operation we should act on.
+     *
+     * @return array{0:string,1:string,2:string}|null
+     */
+    protected function parseTableEvent(string $name, mixed $resource): ?array
+    {
+        // Skip the templated duplicate event ("{table_name}") — the resolved
+        // one fires alongside it.
+        if (str_contains($name, '{')) {
+            return null;
+        }
+        if (!str_contains($name, '._table.')) {
+            return null;
+        }
+
+        $service = strstr($name, '._table.', true);
+        if ($service === false || $service === '') {
+            return null;
+        }
+
+        // {service}._table.{table}.{verb} after stripping the process suffix.
+        $base = preg_replace('/\.(pre|post)_process$/', '', $name);
+        $verb = strtoupper((string) substr(strrchr($base, '.'), 1));
+        if ($verb === '') {
+            return null;
+        }
+
+        // Prefer the resolved resource (handles schema-qualified dotted names).
+        $table = is_string($resource) && $resource !== ''
+            ? $resource
+            : $this->tableFromName($base, $service);
+        if ($table === '') {
+            return null;
+        }
+
+        return [$service, $table, $verb];
+    }
+
+    /**
+     * Pull the list of records from a write payload. Handles the wrapped
+     * `{resource: [...]}` shape and a bare single record.
+     *
+     * @return array<int,mixed>
+     */
+    protected function extractRecords(array $payload): array
+    {
+        if (isset($payload['resource']) && is_array($payload['resource'])) {
+            return $payload['resource'];
+        }
+        if ($this->isAssoc($payload)) {
+            return [$payload]; // single bare record
+        }
+        return [];
     }
 
     protected function isAssoc(array $a): bool
