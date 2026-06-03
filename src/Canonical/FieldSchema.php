@@ -35,6 +35,7 @@ final class FieldSchema implements \JsonSerializable
      */
     public function __construct(
         public readonly string $name,
+        public readonly ?string $alias,
         public readonly ?string $label,
         public readonly ?string $description,
         public readonly string $type,
@@ -66,6 +67,7 @@ final class FieldSchema implements \JsonSerializable
     {
         return [
             'name'           => $this->name,
+            'alias'          => $this->alias,
             'label'          => $this->label,
             'description'    => $this->description,
             'type'           => $this->type,

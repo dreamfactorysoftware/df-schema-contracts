@@ -117,6 +117,7 @@ class Normalizer
 
         return new FieldSchema(
             name: $column->getName(),
+            alias: $column->alias ?: null,
             label: $column->getLabel(),
             description: $description,
             type: $canonicalType,

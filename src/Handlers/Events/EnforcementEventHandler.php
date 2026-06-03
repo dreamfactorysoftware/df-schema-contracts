@@ -31,13 +31,12 @@ use Illuminate\Contracts\Events\Dispatcher;
  * records. Inbound write validation (`strict`) and related/nested record
  * shaping are deliberately not handled yet.
  *
+ * Field aliases ARE handled: the allowed-key set includes both a field's
+ * canonical name and its alias (DreamFactory keys response records by the
+ * alias when set). Contracts locked before the canonical model captured
+ * `alias` must be re-locked to gain alias-aware shaping.
+ *
  * KNOWN LIMITATIONS (tracked for follow-up increments):
- *  - Field aliases: the allowed-key set is built from canonical field NAMES,
- *    but DreamFactory keys response records by a field's ALIAS when one is
- *    set. An aliased contract field is therefore over-stripped (hidden) even
- *    though it is part of the contract. This errs on the safe side (hides a
- *    contract field rather than leaking a non-contract one). Fix requires
- *    capturing the alias in the canonical snapshot.
  *  - Related/nested records (`?related=`) below the top level are not shaped.
  *  - `?fields=` selection is not intersected with the contract.
  */
@@ -176,11 +175,22 @@ class EnforcementEventHandler
         $canonical = json_decode($snapshot->schema_json, true);
         $keys = [];
         foreach (($canonical['fields'] ?? []) as $f) {
+            // DreamFactory keys response records by a field's ALIAS when one
+            // is set, otherwise by its NAME. Allow both so aliased contract
+            // fields are not over-stripped. Snapshots locked before the
+            // canonical model captured `alias` won't have it — re-lock such
+            // tables to pick up alias-aware shaping.
+            if (!empty($f['alias'])) {
+                $keys[$f['alias']] = true;
+            }
             if (isset($f['name'])) {
                 $keys[$f['name']] = true;
             }
         }
         foreach (($canonical['relationships'] ?? []) as $r) {
+            if (!empty($r['alias'])) {
+                $keys[$r['alias']] = true;
+            }
             if (isset($r['name'])) {
                 $keys[$r['name']] = true;
             }
