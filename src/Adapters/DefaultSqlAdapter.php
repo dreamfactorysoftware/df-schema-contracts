@@ -22,6 +22,35 @@ use RuntimeException;
  */
 class DefaultSqlAdapter implements CanonicalSchemaAdapter
 {
+    /**
+     * Service types this adapter handles. `BaseDbService` is shared by SQL
+     * AND NoSQL connectors (MongoDB, Cassandra, CouchDB all extend it), so
+     * an `instanceof` check alone would wrongly claim NoSQL services — whose
+     * collections don't map to the canonical table/column/relationship
+     * model. We gate on the service type instead. Keep this aligned with the
+     * UI's SQL_SERVICE_TYPES set in df-manage-schema-contracts.component.ts.
+     */
+    public const SQL_SERVICE_TYPES = [
+        'mysql',
+        'mariadb',
+        'pgsql',
+        'sqlite',
+        'sqlsrv',
+        'oracle',
+        'snowflake',
+        'ibmdb2',
+        'informix',
+        'firebird',
+        'sqlanywhere',
+        'memsql',
+        'redshift',
+        'alloydb',
+        'databricks',
+        'trino',
+        'hana',
+        'dremio',
+    ];
+
     public function __construct(private ?Normalizer $normalizer = null)
     {
         $this->normalizer = $normalizer ?? new Normalizer();
@@ -39,7 +68,10 @@ class DefaultSqlAdapter implements CanonicalSchemaAdapter
 
     public function supports(ServiceInterface $service): bool
     {
-        return $service instanceof BaseDbService;
+        // Must be a DB service AND a SQL type — NoSQL DB services also
+        // extend BaseDbService but aren't relational.
+        return $service instanceof BaseDbService
+            && in_array(strtolower((string) $service->getType()), self::SQL_SERVICE_TYPES, true);
     }
 
     public function describeService(ServiceInterface $service): ServiceSchema

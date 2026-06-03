@@ -11,6 +11,7 @@ use DreamFactory\Core\Facades\ServiceManager;
 use DreamFactory\Core\Models\Service;
 use DreamFactory\Core\Resources\BaseRestResource;
 use DreamFactory\Core\SchemaContracts\Adapters\AdapterRegistry;
+use DreamFactory\Core\SchemaContracts\Adapters\DefaultSqlAdapter;
 use DreamFactory\Core\SchemaContracts\Canonical\TableSchema;
 use DreamFactory\Core\SchemaContracts\Drift\DriftEngine;
 use DreamFactory\Core\SchemaContracts\Drift\Kind;
@@ -1536,9 +1537,15 @@ class SchemaContractResource extends BaseRestResource
         if (!$service) {
             throw new NotFoundException("Service '{$name}' not found.");
         }
-        if (!$service instanceof BaseDbService) {
+        // NoSQL DB services (MongoDB, Cassandra, ...) also extend
+        // BaseDbService, so check the type allowlist for a clean rejection
+        // rather than letting the request fall through to the adapter
+        // registry with a generic "no adapter" error.
+        $isSql = $service instanceof BaseDbService
+            && in_array(strtolower((string) $service->getType()), DefaultSqlAdapter::SQL_SERVICE_TYPES, true);
+        if (!$isSql) {
             throw new BadRequestException(
-                "Service '{$name}' is not a SQL service; schema contracts are SQL-only in Phase 1."
+                "Service '{$name}' is not a SQL database service; schema contracts are SQL-only."
             );
         }
         return $service;

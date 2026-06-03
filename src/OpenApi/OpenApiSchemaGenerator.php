@@ -227,10 +227,21 @@ class OpenApiSchemaGenerator
             return $explicit;
         }
 
+        $schema = $table['schema'] ?? null;
+        $name   = (string) ($table['name'] ?? '');
+
+        // For non-default schemas DreamFactory addresses the table by its
+        // qualified name (e.g. "inventory.stock"), which already embeds the
+        // schema. Strip the leading "schema." so we don't double it up
+        // (PgtestInventoryInventoryStock -> PgtestInventoryStock).
+        if ($schema !== null && str_starts_with($name, $schema . '.')) {
+            $name = substr($name, strlen($schema) + 1);
+        }
+
         $parts = array_filter([
             $serviceName,
-            $table['schema'] ?? null,
-            $table['name'] ?? null,
+            $schema,
+            $name,
         ]);
 
         $pascal = '';
