@@ -44,10 +44,20 @@ use Illuminate\Contracts\Events\Dispatcher;
  * contract. Same-service relationships only; cross-service and deeper-than-
  * one-level nesting pass through unshaped.
  *
+ * Nested WRITES are validated WITHOUT extra code here: DreamFactory
+ * decomposes a parent write carrying related records into internal
+ * per-table operations, each of which fires its own pre_process event —
+ * so the related record is validated against the RELATED table's contract
+ * by the same handlePreProcess path (verified live: nested non-contract
+ * field and nested read-only alias both reject with 400). Caveat: DF's
+ * batch semantics insert the parent before processing relationships, so a
+ * nested rejection can leave the parent row behind unless the client sends
+ * `?rollback=true` (verified: rollback removes the parent). That is DF's
+ * standard behavior for any nested-step failure, not specific to contracts.
+ *
  * KNOWN LIMITATIONS (tracked for follow-up increments):
- *  - Cross-service related records are not shaped.
- *  - Nesting deeper than one level (related-of-related) is not shaped.
- *  - Nested WRITES (related records in a write payload) are not validated.
+ *  - Cross-service related records are not shaped on reads.
+ *  - Read-shaping deeper than one level (related-of-related) passes through.
  */
 class EnforcementEventHandler
 {
