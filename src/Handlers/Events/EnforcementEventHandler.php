@@ -7,6 +7,7 @@ use DreamFactory\Core\Events\PreProcessApiEvent;
 use DreamFactory\Core\Exceptions\BadRequestException;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractService;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractSnapshot;
+use DreamFactory\Core\Utility\ResourcesWrapper;
 use Illuminate\Contracts\Events\Dispatcher;
 
 /**
@@ -15,14 +16,15 @@ use Illuminate\Contracts\Events\Dispatcher;
  * Two complementary behaviors gated by a service's `runtime_enforcement`:
  *
  *  - shape_response (and strict): on the POST-process event, strip response
- *    fields not in the table's active locked contract. A locked table's API
- *    output stays stable even when the live DB grows new columns — they stay
- *    invisible until the contract is re-locked/promoted.
+ *    fields not in the table's active locked contract. Applies to EVERY verb's
+ *    response body (GET list/single + POST/PUT/PATCH/DELETE acks that return
+ *    rows via `?fields=`), so a locked table's columns stay invisible no
+ *    matter which verb returns them, until the contract is re-locked/promoted.
  *
- *  - strict only: on the PRE-process event, reject writes (POST/PUT/PATCH)
- *    whose payload references fields outside the contract or writes to
- *    read-only contract fields. This stops clients from writing to columns
- *    that aren't part of the locked API surface.
+ *  - strict only: on the PRE-process event, reject writes (POST/PUT/PATCH,
+ *    collection or single-record) whose payload references fields outside the
+ *    contract or writes to read-only contract fields. Payloads are read in any
+ *    of DreamFactory's accepted shapes (wrapped, bare list, bare record).
  *
  * Design notes (validated against live event probes):
  *  - The event NAME is the reliable identifier; `$request->getService()` is
@@ -75,8 +77,12 @@ class EnforcementEventHandler
 
     public function subscribe(Dispatcher $events): void
     {
-        $events->listen(PreProcessApiEvent::class, [static::class, 'handlePreProcess']);
-        $events->listen(PostProcessApiEvent::class, [static::class, 'handlePostProcess']);
+        // Bind THIS instance (not [static::class, ...], which makes Laravel
+        // resolve a fresh, un-memoized handler from the container per
+        // dispatch). Using $this keeps the per-request memo arrays live for
+        // the whole request.
+        $events->listen(PreProcessApiEvent::class, [$this, 'handlePreProcess']);
+        $events->listen(PostProcessApiEvent::class, [$this, 'handlePostProcess']);
     }
 
     /**
@@ -143,10 +149,11 @@ class EnforcementEventHandler
         }
         [$service, $table, $verb] = $parsed;
 
-        // shape_response only affects reads.
-        if ($verb !== 'GET') {
-            return;
-        }
+        // Shape EVERY verb's response, not just GET: DreamFactory write and
+        // delete responses honor `?fields=`/`?related=` and return affected
+        // rows, so a GET-only guard would leak non-contract columns through
+        // a POST/PUT/PATCH/DELETE response body. shapeContent() no-ops on
+        // non-record responses, so this is safe for write acks too.
 
         // Fast path: is enforcement on for this service?
         $level = $this->enforcementLevel($service);
@@ -191,10 +198,11 @@ class EnforcementEventHandler
      */
     protected function shapeContent(array $content, array $allowed, array $relatedShapes = []): ?array
     {
-        if (isset($content['resource']) && is_array($content['resource'])) {
-            $content['resource'] = array_map(
+        $wrapper = ResourcesWrapper::getWrapper();
+        if (isset($content[$wrapper]) && is_array($content[$wrapper])) {
+            $content[$wrapper] = array_map(
                 fn ($rec) => is_array($rec) ? $this->filterRecord($rec, $allowed, $relatedShapes) : $rec,
-                $content['resource']
+                $content[$wrapper]
             );
             return $content;
         }
@@ -402,26 +410,25 @@ class EnforcementEventHandler
         return $this->enforcementMemo[$service];
     }
 
-    protected function tableFromName(string $base, string $service): string
-    {
-        // base = {service}._table.{table}.{verb}
-        $afterTable = substr($base, strlen($service . '._table.'));
-        // strip trailing .{verb}
-        $pos = strrpos($afterTable, '.');
-        return $pos === false ? $afterTable : substr($afterTable, 0, $pos);
-    }
-
     /**
      * Parse a (pre|post)_process event into [service, table, verb], or null
      * if it isn't a resolved `_table` operation we should act on.
+     *
+     * The table is derived from the event NAME, not $event->resource: for a
+     * single-record op the resolved event name is
+     * `{service}._table.{table}.{id}.{verb}.(pre|post)_process` while
+     * $event->resource is just the id (e.g. "1") — unreliable. Collection ops
+     * are `{service}._table.{table}.{verb}.…`. The table itself may contain
+     * dots (schema-qualified, e.g. "inventory.stock").
      *
      * @return array{0:string,1:string,2:string}|null
      */
     protected function parseTableEvent(string $name, mixed $resource): ?array
     {
-        // Skip the templated duplicate event ("{table_name}") — the resolved
-        // one fires alongside it.
-        if (str_contains($name, '{')) {
+        // Skip ONLY the templated duplicate event, identified by the literal
+        // `{table_name}` token. The resolved single-record event carries a
+        // literal `{id}` token instead and MUST be processed.
+        if (str_contains($name, '{table_name}')) {
             return null;
         }
         if (!str_contains($name, '._table.')) {
@@ -433,18 +440,29 @@ class EnforcementEventHandler
             return null;
         }
 
-        // {service}._table.{table}.{verb} after stripping the process suffix.
+        // Strip the `.(pre|post)_process` suffix, then everything up to and
+        // including the first `._table.` prefix.
         $base = preg_replace('/\.(pre|post)_process$/', '', $name);
-        $verb = strtoupper((string) substr(strrchr($base, '.'), 1));
-        if ($verb === '') {
+        $remainder = substr($base, strlen($service . '._table.'));
+        if ($remainder === '' || $remainder === false) {
             return null;
         }
 
-        // Prefer the resolved resource (handles schema-qualified dotted names).
-        $table = is_string($resource) && $resource !== ''
-            ? $resource
-            : $this->tableFromName($base, $service);
-        if ($table === '') {
+        // remainder = {table}[.{id}].{verb}, where {table} may contain dots.
+        $lastDot = strrpos($remainder, '.');
+        if ($lastDot === false) {
+            return null; // no verb segment
+        }
+        $verb = strtoupper(substr($remainder, $lastDot + 1));
+        $head = substr($remainder, 0, $lastDot); // {table}[.{id}]
+
+        // Single-record events carry a literal `.{id}` token after the table.
+        if (str_ends_with($head, '.{id}')) {
+            $head = substr($head, 0, -strlen('.{id}'));
+        }
+
+        $table = $head;
+        if ($table === '' || $verb === '') {
             return null;
         }
 
@@ -452,15 +470,25 @@ class EnforcementEventHandler
     }
 
     /**
-     * Pull the list of records from a write payload. Handles the wrapped
-     * `{resource: [...]}` shape and a bare single record.
+     * Pull the list of records from a write payload. Handles all three shapes
+     * DreamFactory accepts:
+     *   - wrapped:      {<wrapper>: [ {...}, ... ]}   (wrapper is configurable)
+     *   - bare list:    [ {...}, {...} ]              (collection write)
+     *   - bare record:  { ... }                       (single-record write)
+     *
+     * The bare-list case is the one a name-only `resource` check used to miss,
+     * letting strict validation be bypassed by dropping the wrapper.
      *
      * @return array<int,mixed>
      */
     protected function extractRecords(array $payload): array
     {
-        if (isset($payload['resource']) && is_array($payload['resource'])) {
-            return $payload['resource'];
+        $wrapper = ResourcesWrapper::getWrapper();
+        if (isset($payload[$wrapper]) && is_array($payload[$wrapper])) {
+            return $payload[$wrapper];
+        }
+        if (isset($payload[0]) && is_array($payload[0])) {
+            return $payload; // bare top-level list of records
         }
         if ($this->isAssoc($payload)) {
             return [$payload]; // single bare record

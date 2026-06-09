@@ -168,6 +168,7 @@ class Normalizer
 
         return new RelationshipSchema(
             name: $relation->getName(),
+            alias: $relation->alias ?: null,
             label: $relation->getLabel(),
             type: $type,
             field: $this->joinIfArray($relation->field),
