@@ -43,8 +43,11 @@ use Illuminate\Contracts\Events\Dispatcher;
  *
  * Related/nested READ records ARE shaped one level deep: embedded related
  * records (`?related=`) are filtered by the related table's own active
- * contract. Same-service relationships only; cross-service and deeper-than-
- * one-level nesting pass through unshaped.
+ * contract. Same-service relationships only. Cross-SCHEMA relationships
+ * within one service DO shape correctly (verified on Postgres:
+ * inventory.stock -> inventory.warehouses) because DreamFactory uses the same
+ * qualified name for a table's identity and for ref_table. Cross-SERVICE and
+ * deeper-than-one-level nesting pass through unshaped.
  *
  * Nested WRITES are validated WITHOUT extra code here: DreamFactory
  * decomposes a parent write carrying related records into internal
