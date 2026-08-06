@@ -24,6 +24,14 @@ Initial package. SQL schema contracts for DreamFactory.
 - System resource at `/api/v2/system/schema_contract` covering service and
   table level: list, summary, mode config, lock/unlock, test preview, diff,
   snapshot history, promote, and OpenAPI generation.
+- Runtime contract enforcement, per service via `runtime_enforcement`
+  (`off` / `shape_response` / `strict`), independent of `mode`:
+  - `shape_response` — strips response fields absent from the table's active
+    locked contract, on every verb that returns rows.
+  - `strict` — additionally rejects writes referencing non-contract or
+    read-only fields with a 400.
+  - Alias-aware in both directions; embedded related records (`?related=`)
+    are shaped one level deep within a service, including across schemas.
 - `schema-contracts:describe` and `schema-contracts:prune` artisan commands.
 - Audit columns (`created_by_id` / `last_modified_by_id`) on contract writes.
 - Polyfill for PHP 8.4 `request_parse_body()` so DELETE/PATCH/PUT work on
@@ -40,4 +48,7 @@ Initial package. SQL schema contracts for DreamFactory.
   SQL Server computed columns, etc.) — vendor metadata not yet pushed into
   `native`.
 - `indexes` not yet populated by the normalizer.
-- Runtime contract enforcement (response shaping) not implemented.
+- Runtime enforcement does not shape cross-service relationships or nesting
+  deeper than one level; those pass through unshaped. Contracts locked before
+  the canonical model captured `alias` must be re-locked to gain alias-aware
+  enforcement.
