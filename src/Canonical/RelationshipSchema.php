@@ -21,6 +21,7 @@ final class RelationshipSchema implements \JsonSerializable
      */
     public function __construct(
         public readonly string $name,
+        public readonly ?string $alias,
         public readonly ?string $label,
         public readonly string $type,
         public readonly string $field,
@@ -39,6 +40,7 @@ final class RelationshipSchema implements \JsonSerializable
     {
         return [
             'name'         => $this->name,
+            'alias'        => $this->alias,
             'label'        => $this->label,
             'type'         => $this->type,
             'field'        => $this->field,

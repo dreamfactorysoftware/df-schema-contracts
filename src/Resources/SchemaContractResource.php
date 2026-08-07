@@ -692,6 +692,10 @@ class SchemaContractResource extends BaseRestResource
             ? $payload['archive_retention_count']
             : null;
 
+        $newEnforcement = array_key_exists('runtime_enforcement', $payload)
+            ? (is_string($payload['runtime_enforcement']) ? strtolower(trim($payload['runtime_enforcement'])) : null)
+            : null;
+
         $validModes = [
             SchemaContractService::MODE_NONE,
             SchemaContractService::MODE_AUTO,
@@ -700,6 +704,15 @@ class SchemaContractResource extends BaseRestResource
         if ($newMode !== null && !in_array($newMode, $validModes, true)) {
             throw new BadRequestException(
                 "Invalid mode '{$newMode}'. Must be one of: " . implode(', ', $validModes)
+            );
+        }
+
+        if ($newEnforcement !== null
+            && !in_array($newEnforcement, SchemaContractService::ENFORCEMENT_LEVELS, true)
+        ) {
+            throw new BadRequestException(
+                "Invalid runtime_enforcement '{$newEnforcement}'. Must be one of: "
+                . implode(', ', SchemaContractService::ENFORCEMENT_LEVELS)
             );
         }
 
@@ -740,6 +753,9 @@ class SchemaContractResource extends BaseRestResource
         ];
         if ($newMode !== null) {
             $attrs['mode'] = $newMode;
+        }
+        if ($newEnforcement !== null) {
+            $attrs['runtime_enforcement'] = $newEnforcement;
         }
         if (array_key_exists('archive_retention_count', $payload)) {
             $attrs['archive_retention_count'] = ($newRetention === '' || $newRetention === null)
@@ -1080,6 +1096,7 @@ class SchemaContractResource extends BaseRestResource
         $base = [
             'service' => $serviceName,
             'mode'    => $modeRow?->mode ?? SchemaContractService::MODE_NONE,
+            'runtime_enforcement' => $modeRow?->runtime_enforcement ?? SchemaContractService::ENFORCE_OFF,
             'archive_retention_count' => $modeRow?->archive_retention_count,
             'snapshot_counts' => [
                 'active'   => $activeSnapshots->count(),

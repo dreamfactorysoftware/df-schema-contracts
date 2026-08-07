@@ -6,9 +6,11 @@ use DreamFactory\Core\SchemaContracts\Adapters\AdapterRegistry;
 use DreamFactory\Core\SchemaContracts\Adapters\DefaultSqlAdapter;
 use DreamFactory\Core\SchemaContracts\Console\DescribeCommand;
 use DreamFactory\Core\SchemaContracts\Console\PruneCommand;
+use DreamFactory\Core\SchemaContracts\Handlers\Events\EnforcementEventHandler;
 use DreamFactory\Core\SchemaContracts\Resources\SchemaContractResource;
 use DreamFactory\Core\System\Components\SystemResourceManager;
 use DreamFactory\Core\System\Components\SystemResourceType;
+use Illuminate\Support\Facades\Event;
 
 class ServiceProvider extends \Illuminate\Support\ServiceProvider
 {
@@ -40,6 +42,11 @@ class ServiceProvider extends \Illuminate\Support\ServiceProvider
     public function boot(): void
     {
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
+
+        // Phase 6 runtime enforcement: response shaping for services with
+        // runtime_enforcement enabled. The handler short-circuits cheaply for
+        // the common (enforcement-off) case.
+        Event::subscribe(new EnforcementEventHandler());
 
         if ($this->app->runningInConsole()) {
             $this->commands([
