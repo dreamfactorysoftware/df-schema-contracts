@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Canonical run (from the DreamFactory app root, same as every df-* package):
+    cd /opt/dreamfactory && vendor/bin/phpunit --bootstrap vendor/autoload.php \
+      vendor/dreamfactory/df-schema-contracts/tests
+  The Unit suite is pure PHP (no DB, no HTTP, no Laravel container), so it runs
+  anywhere the package classes autoload.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+         cacheDirectory=".phpunit.cache">
+    <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+    </testsuites>
+    <source>
+        <include>
+            <directory suffix=".php">src</directory>
+        </include>
+    </source>
+</phpunit>
