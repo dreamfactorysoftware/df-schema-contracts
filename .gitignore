@@ -1,10 +1,3 @@
-/vendor
-/.idea
-/.vscode
-composer.phar
+/vendor/
+/.phpunit.cache/
 composer.lock
-.DS_Store
-
-# Internal design / status / dev-setup notes are kept locally, not committed
-# (matches sibling DF packages, which ship README + CHANGELOG only).
-/docs

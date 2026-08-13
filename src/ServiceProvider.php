@@ -2,6 +2,7 @@
 
 namespace DreamFactory\Core\SchemaContracts;
 
+use DreamFactory\Core\Enums\LicenseLevel;
 use DreamFactory\Core\SchemaContracts\Adapters\AdapterRegistry;
 use DreamFactory\Core\SchemaContracts\Adapters\DefaultSqlAdapter;
 use DreamFactory\Core\SchemaContracts\Console\DescribeCommand;
@@ -34,6 +35,7 @@ class ServiceProvider extends \Illuminate\Support\ServiceProvider
                 'name'        => 'schema_contract',
                 'label'       => 'Schema Contracts',
                 'description' => 'Lock, diff, and promote SQL schema contracts.',
+                'subscription_required' => LicenseLevel::SILVER,
                 'class_name'  => SchemaContractResource::class,
             ]));
         });
