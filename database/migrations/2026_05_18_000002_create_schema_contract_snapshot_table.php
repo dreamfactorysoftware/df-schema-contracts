@@ -8,7 +8,11 @@ class CreateSchemaContractSnapshotTable extends Migration
 {
     public function up()
     {
-        Schema::create('schema_contract_snapshot', function (Blueprint $t) {
+        // SQL Server rejects multiple cascade paths, so user audit FKs use
+        // NO ACTION there. Matches the df-core system table convention.
+        $onDelete = ('sqlsrv' === Schema::getConnection()->getDriverName()) ? 'no action' : 'set null';
+
+        Schema::create('schema_contract_snapshot', function (Blueprint $t) use ($onDelete) {
             $t->increments('id');
 
             // Owning service. Cascade delete: orphan snapshots have no value.
@@ -57,10 +61,10 @@ class CreateSchemaContractSnapshotTable extends Migration
             $t->timestamp('last_modified_date')->useCurrent();
 
             $t->integer('created_by_id')->unsigned()->nullable();
-            $t->foreign('created_by_id')->references('id')->on('user')->onDelete('set null');
+            $t->foreign('created_by_id')->references('id')->on('user')->onDelete($onDelete);
 
             $t->integer('last_modified_by_id')->unsigned()->nullable();
-            $t->foreign('last_modified_by_id')->references('id')->on('user')->onDelete('set null');
+            $t->foreign('last_modified_by_id')->references('id')->on('user')->onDelete($onDelete);
 
             // Unique: every (service, table identity, version) appears once.
             $t->unique(
