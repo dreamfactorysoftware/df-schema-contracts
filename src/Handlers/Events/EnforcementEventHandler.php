@@ -5,6 +5,7 @@ namespace DreamFactory\Core\SchemaContracts\Handlers\Events;
 use DreamFactory\Core\Events\PostProcessApiEvent;
 use DreamFactory\Core\Events\PreProcessApiEvent;
 use DreamFactory\Core\Exceptions\BadRequestException;
+use DreamFactory\Core\SchemaContracts\Enforcement\ContractShape;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractService;
 use DreamFactory\Core\SchemaContracts\Models\SchemaContractSnapshot;
 use DreamFactory\Core\Utility\ResourcesWrapper;
@@ -225,7 +226,9 @@ class EnforcementEventHandler
      */
     protected function filterRecord(array $record, array $allowed, array $relatedShapes = []): array
     {
-        $out = array_intersect_key($record, $allowed);
+        // Contract fields, plus aggregates DreamFactory computed over them (SUM_col, COUNT_ALL):
+        // those are not contract fields, and stripping them broke every aggregate on a locked table.
+        $out = ContractShape::filterTopLevel($record, $allowed);
 
         // Shape embedded related records by the related table's contract.
         foreach ($relatedShapes as $relKey => $relAllowed) {
