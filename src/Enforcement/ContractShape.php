@@ -89,6 +89,14 @@ final class ContractShape
      */
     public static function shapeModelTable(array $entry, array $allowed): array
     {
+        // A model column may be listed under its API name (alias) with the database
+        // name in `column`; if the contract allows either, samples and enum values
+        // keyed by the API name must survive too.
+        foreach ($entry['columns'] ?? [] as $c) {
+            if (isset($c['column'], $c['name']) && (isset($allowed[(string) $c['column']]) || isset($allowed[(string) $c['name']]))) {
+                $allowed[(string) $c['name']] = true;
+            }
+        }
         if (isset($entry['columns']) && is_array($entry['columns'])) {
             $entry['columns'] = array_values(array_filter(
                 $entry['columns'],
