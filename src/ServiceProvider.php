@@ -28,6 +28,16 @@ class ServiceProvider extends \Illuminate\Support\ServiceProvider
         // their own adapter without depending on this package's concrete class.
         $this->app->alias(AdapterRegistry::class, 'df.schema_contracts.adapters');
 
+        // With enforcement on, the data model (MCP get_data_model) must describe only what
+        // the API returns. Needs df-core's DataModelEnricherInterface; older cores skip it.
+        if (interface_exists(\DreamFactory\Core\Contracts\DataModelEnricherInterface::class)) {
+            $this->app->singleton(\DreamFactory\Core\SchemaContracts\Enrichers\ContractModelEnricher::class);
+            $this->app->tag(
+                [\DreamFactory\Core\SchemaContracts\Enrichers\ContractModelEnricher::class],
+                \DreamFactory\Core\Contracts\DataModelEnricherInterface::TAG
+            );
+        }
+
         // Register the schema_contract system resource under
         // /api/v2/system/schema_contract/...
         $this->app->resolving('df.system.resource', function (SystemResourceManager $rm) {

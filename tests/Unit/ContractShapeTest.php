@@ -49,4 +49,17 @@ class ContractShapeTest extends TestCase
         $this->assertSame(['status' => ['pending']], $shaped['enum_values']);
         $this->assertSame(2, $shaped['row_count']);
     }
+
+    public function testAliasedModelColumnsKeepTheirSamples(): void
+    {
+        $allowed = ContractShape::allowedKeys(['fields' => [['name' => 'id'], ['name' => 'status']]]);
+        $entry = [
+            'columns' => [['name' => 'id'], ['name' => 'order_status', 'column' => 'status']],
+            'sample_data' => [['id' => 1, 'order_status' => 'shipped']],
+            'enum_values' => ['order_status' => ['shipped']],
+        ];
+        $shaped = ContractShape::shapeModelTable($entry, $allowed);
+        $this->assertSame([['id' => 1, 'order_status' => 'shipped']], $shaped['sample_data']);
+        $this->assertSame(['order_status' => ['shipped']], $shaped['enum_values']);
+    }
 }
